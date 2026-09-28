@@ -1,3 +1,11 @@
+# Wine 10.17 Custom（Winlator 定制版）
+
+基于 [royel21/wine-10.17-custom](https://github.com/royel21/wine-10.17-custom) 修改，面向 Winlator 的 Wine 10.17 定制编译。
+
+## 相对上游的改动
+
+- xxx（补丁内容 / 构建参数调整，请按实际情况补充）
+
 ## INTRODUCTION
 
 This is a custom wine for vanilla custom winlator with some patches applied
