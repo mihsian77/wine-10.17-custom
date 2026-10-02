@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # ==============================================================================
-# Wine 10.17 Custom - 原生多语言汉化版构建脚本
-# 参照 Waim908/wine-winlator 的 wcp/whp 打包结构
+# Wine 10.17 Custom - 原生多语言汉化版构建脚本 v3
+# 关键改进：分阶段编译（native tools+NLS先编译，确保wrc正确加载po翻译）
+# 打包：wcp(根目录bin/lib/share+prefixPack.txz) + whp(wine-ver/+container-pattern.tzst)
 # ==============================================================================
 
 CLEAN_BUILD=false
@@ -24,7 +25,7 @@ WINEVER="10.17"
 PKG_BASENAME="wine-${WINEVER}"
 
 echo "================================================================="
-echo "==> Starting Wine ${WINEVER} WOW64 Build (NLS multi-language)..."
+echo "==> Wine ${WINEVER} WOW64 Build v3 (分阶段编译 + NLS全语言)..."
 echo "================================================================="
 
 unset PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR
@@ -33,12 +34,12 @@ if [ "${INSTALL_DEPS}" = true ]; then
   echo "==> Installing dependencies (incl. gettext)..."
   sudo apt-get update && sudo apt-get install -y \
     build-essential bison flex pkg-config \
+    gcc-multilib g++-multilib \
     gcc-mingw-w64-i686 g++-mingw-w64-i686 \
     gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64 \
     gettext zstd xz-utils \
     libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev \
     libvulkan-dev libsdl2-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-    libgstreamer-plugins-good1.0-dev libgstreamer-plugins-bad1.0-dev \
     libasound2-dev libpulse-dev libgnutls28-dev libmpg123-dev \
     libopenal-dev libpng-dev libjpeg-dev libtiff-dev libwebp-dev liblcms2-dev \
     libxml2-dev libxslt1-dev libx11-dev libxcursor-dev libxi-dev \
@@ -52,16 +53,20 @@ fi
 mkdir -p "${BUILD_DIR}" "${INSTALL_PREFIX}" "${DIST_DIR}"
 cd "${BUILD_DIR}"
 
-# configure (gettext NLS enabled)
+# ==============================================================================
+# 阶段0: configure
+# ==============================================================================
 if [ ! -f "Makefile" ]; then
-  echo "==> Running Wine ./configure (NLS enabled)..."
+  echo "==> [阶段0] Running Wine ./configure (NLS enabled)..."
   ../configure --prefix="${INSTALL_PREFIX}" \
     --enable-archs=i386,x86_64 \
     --enable-win64 \
     --with-mingw \
+    --enable-nls \
     --with-freetype --with-fontconfig --with-gstreamer \
     --with-vulkan --with-opengl --with-sdl --with-gnutls \
     --with-xrandr --with-xrender --with-gssapi --with-krb5 \
+    --with-pulse --with-alsa --with-openal --with-mpg123 \
     --enable-tools --disable-tests --disable-win16 \
     --without-unwind --without-dbus --without-inotify --without-netapi \
     --without-xshape --without-xxf86vm --without-xshm --without-xcomposite \
@@ -73,30 +78,80 @@ if [ ! -f "Makefile" ]; then
 fi
 
 NPROC=$(nproc)
-echo "==> Compiling Wine (${NPROC} threads)..."
+
+# ==============================================================================
+# 阶段1: 编译 native Wine tools (wrc/winebuild等) + NLS
+# 关键：wrc需要在编译PE资源前就绪，才能加载po/<lang>.mo嵌入翻译
+# ==============================================================================
+echo "==> [阶段1] 编译 native tools + NLS..."
+make __tooldeps__ -j"${NPROC}"
+echo "  native tools 完成"
+
+# 编译 NLS（语言资源 .mo 文件）
+if [ -d "nls" ]; then
+  make -C nls -j"${NPROC}"
+  echo "  NLS 编译完成"
+  # 验证 NLS 输出
+  if [ -f "nls/locale.nls" ]; then
+    echo "  ✓ locale.nls 已生成"
+  else
+    echo "  ⚠️ locale.nls 未找到"
+  fi
+fi
+
+# 验证 wrc 能找到 po 翻译
+if [ -f "tools/wrc/wrc" ]; then
+  echo "  ✓ wrc 已编译"
+  # 检查 po 目录的 .mo 文件
+  MO_COUNT=$(find ../po -name "*.mo" 2>/dev/null | wc -l)
+  echo "  po 目录 .mo 文件数: ${MO_COUNT}"
+fi
+
+# ==============================================================================
+# 阶段2: 全量编译（PE 模块，wrc加载NLS翻译嵌入资源）
+# ==============================================================================
+echo "==> [阶段2] 全量编译 Wine (${NPROC} threads)..."
 make -j"${NPROC}"
 
 echo "==> Installing..."
 make install STRIP=true
 
-# Prune
-echo "==> Pruning..."
+# ==============================================================================
+# 体积优化
+# ==============================================================================
+echo "==> 体积优化..."
+# 删除静态库和def文件
 find "${INSTALL_PREFIX}" -type f \( -name "*.a" -o -name "*.def" \) -delete
+# 删除文档和man
 rm -rf "${INSTALL_PREFIX}/share/man" "${INSTALL_PREFIX}/share/doc"
+# 删除include（运行时不需要）
 rm -rf "${INSTALL_PREFIX}/include"
 
-echo "==> Stripping..."
-find "${INSTALL_PREFIX}" -name "*.so*" -exec strip --strip-unneeded {} + 2>/dev/null || true
-find "${INSTALL_PREFIX}" -name "*.dll" -exec x86_64-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
-find "${INSTALL_PREFIX}" -name "*.exe" -exec x86_64-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
-find "${INSTALL_PREFIX}" -name "*.dll" -exec i686-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
-find "${INSTALL_PREFIX}" -name "*.exe" -exec i686-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
+# 激进 strip：--strip-all 比 --strip-unneeded 更彻底
+echo "  Stripping ELF .so..."
+find "${INSTALL_PREFIX}" -name "*.so*" -exec strip --strip-all {} + 2>/dev/null || true
+echo "  Stripping PE x86_64..."
+find "${INSTALL_PREFIX}" -path "*x86_64-windows*" \( -name "*.dll" -o -name "*.exe" \) -exec x86_64-w64-mingw32-strip --strip-all {} + 2>/dev/null || true
+echo "  Stripping PE i386..."
+find "${INSTALL_PREFIX}" -path "*i386-windows*" \( -name "*.dll" -o -name "*.exe" \) -exec i686-w64-mingw32-strip --strip-all {} + 2>/dev/null || true
 
-# Verify
+# 验证
 echo "==> Verifying PE output..."
 [ -f "${INSTALL_PREFIX}/lib/wine/i386-windows/ntdll.dll" ] || { echo "ERROR: missing i386 ntdll"; exit 1; }
 [ -f "${INSTALL_PREFIX}/lib/wine/x86_64-windows/ntdll.dll" ] || { echo "ERROR: missing x86_64 ntdll"; exit 1; }
 echo "SUCCESS: PE modules verified"
+
+# 验证 NLS 嵌入：检查 PE 文件中的语言资源
+echo "==> 验证 NLS 翻译嵌入..."
+if command -v wrestool &>/dev/null; then
+  for dll in "${INSTALL_PREFIX}/lib/wine/x86_64-windows/shell32.dll" "${INSTALL_PREFIX}/lib/wine/x86_64-windows/explorer.exe"; do
+    [ -f "$dll" ] || continue
+    LANG_COUNT=$(wrestool -l "$dll" 2>/dev/null | grep -c "STRING" || true)
+    echo "  $(basename $dll): STRING资源组数=${LANG_COUNT}"
+  done
+else
+  echo "  (wrestool未安装，跳过PE资源验证)"
+fi
 
 # ==============================================================================
 # Customize prefixPack (中文环境)
@@ -117,9 +172,7 @@ else
 fi
 
 # ==============================================================================
-# Package WCP format (for ludashi_plus / bionic)
-# 结构: 根目录 bin/ lib/ share/ profile.json prefixPack.txz
-# 外层: zstd --ultra -22
+# Package WCP format
 # ==============================================================================
 echo "==> Packaging WCP format..."
 WCP_TMP="${BUILD_DIR}/wcp-tmp"
@@ -130,16 +183,14 @@ cp -r "${INSTALL_PREFIX}/bin" "${WCP_TMP}/"
 cp -r "${INSTALL_PREFIX}/lib" "${WCP_TMP}/"
 [ -d "${INSTALL_PREFIX}/share" ] && cp -r "${INSTALL_PREFIX}/share" "${WCP_TMP}/"
 
-# prefixPack.txz (xz压缩)
 xz -T0 -9e -c "${PREFIX_TAR}" > "${WCP_TMP}/prefixPack.txz"
 
-# profile.json
 cat > "${WCP_TMP}/profile.json" <<EOF
 {
   "type": "Wine",
   "versionName": "${WINEVER}-amd64",
   "versionCode": 1,
-  "description": "Wine ${WINEVER} amd64 - NLS multi-language Chinese localized build",
+  "description": "Wine ${WINEVER} amd64 - NLS multi-language Chinese localized (分阶段编译)",
   "files": [],
   "wine": {
     "binPath": "bin",
@@ -154,23 +205,19 @@ tar -I "zstd -T0 --ultra -22" -cf "${DIST_DIR}/${PKG_BASENAME}-amd64.wcp" .
 echo "  WCP: ${DIST_DIR}/${PKG_BASENAME}-amd64.wcp ($(du -h "${DIST_DIR}/${PKG_BASENAME}-amd64.wcp" | cut -f1))"
 
 # ==============================================================================
-# Package WHP format (for winlator-pulse)
-# 结构: wine-$ver-/ (bin/lib/share) + container-pattern-$ver.tzst
-# 外层: xz -9e
+# Package WHP format
 # ==============================================================================
 echo "==> Packaging WHP format..."
 WHP_TMP="${BUILD_DIR}/whp-tmp"
 rm -rf "${WHP_TMP}"
 mkdir -p "${WHP_TMP}"
 
-# wine-$ver-/ 子目录
 WINE_DIR="${WHP_TMP}/${PKG_BASENAME}-"
 mkdir -p "${WINE_DIR}"
 cp -r "${INSTALL_PREFIX}/bin" "${WINE_DIR}/"
 cp -r "${INSTALL_PREFIX}/lib" "${WINE_DIR}/"
 [ -d "${INSTALL_PREFIX}/share" ] && cp -r "${INSTALL_PREFIX}/share" "${WINE_DIR}/"
 
-# container-pattern-$ver.tzst (zstd压缩的prefixPack)
 zstd -T0 -9 -c "${PREFIX_TAR}" > "${WHP_TMP}/container-pattern-${WINEVER}.tzst"
 
 cd "${WHP_TMP}"
@@ -178,6 +225,6 @@ tar -I "xz -T0 -9e" -cf "${DIST_DIR}/${PKG_BASENAME}.whp" "${PKG_BASENAME}-" "co
 echo "  WHP: ${DIST_DIR}/${PKG_BASENAME}.whp ($(du -h "${DIST_DIR}/${PKG_BASENAME}.whp" | cut -f1))"
 
 echo "================================================================="
-echo "BUILD COMPLETE!"
+echo "BUILD COMPLETE (v3 分阶段编译)!"
 ls -lh "${DIST_DIR}/"
 echo "================================================================="
