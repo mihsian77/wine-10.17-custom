@@ -149,9 +149,9 @@ fi
 echo "==> Customizing prefixPack for Chinese locale..."
 CUSTOM_PREFIX="${BUILD_DIR}/prefixPack-custom.tzst"
 if [ -x "${WINE_SRC_DIR}/patch_prefix.sh" ]; then
-  bash "${WINE_SRC_DIR}/patch_prefix.sh" \
-    "${WINE_SRC_DIR}/prefixPack.tzst" \
-    "${CUSTOM_PREFIX}"
+  PATCH_ARGS=("${WINE_SRC_DIR}/prefixPack.tzst" "${CUSTOM_PREFIX}")
+  [ -n "${FONT_DIR:-}" ] && PATCH_ARGS+=("${FONT_DIR}")
+  bash "${WINE_SRC_DIR}/patch_prefix.sh" "${PATCH_ARGS[@]}"
   PREFIX_PACK="${CUSTOM_PREFIX}"
 else
   echo "WARNING: patch_prefix.sh not found, using original prefixPack (English env)"
