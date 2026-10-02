@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ==============================================================================
+# Wine 10.17 Custom - 原生多语言汉化版构建脚本
+# 基于 royel21/wine-10.17-custom 修改
+# 修改点：启用gettext(NLS)翻译编译、版本号校正、双格式打包(wcp.xz+whp)、
+#         prefixPack中文环境定制、GitHub Actions友好
+# ==============================================================================
+
 # Parse optional arguments
 CLEAN_BUILD=false
 INSTALL_DEPS=false
@@ -15,14 +22,15 @@ done
 # ==============================================================================
 # CONFIGURATION & PATHS
 # ==============================================================================
-WINE_SRC_DIR="$(cd "./" && pwd)"
+WINE_SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${WINE_SRC_DIR}/wine"
 INSTALL_PREFIX="/tmp/wine_build"
-WINEVER="11.1"
-OUTPUT_WCP="/mnt/d/winlator/wine-${WINEVER}-custom.wcp"
+DIST_DIR="${WINE_SRC_DIR}/dist"
+WINEVER="10.17"
+PKG_NAME="Wine-${WINEVER}-x86_64-zh"
 
 echo "================================================================="
-echo "==> Starting Wine WOW64 Build Pipeline for Winlator..."
+echo "==> Starting Wine ${WINEVER} WOW64 Build (NLS multi-language)..."
 echo "================================================================="
 
 # 1. Clear Conflict Environment Variables
@@ -30,11 +38,12 @@ unset PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR
 
 # 2. Install Build Dependencies (Only when --deps is passed)
 if [ "${INSTALL_DEPS}" = true ]; then
-  echo "==> Installing Wine host & cross-compiler dependencies..."
+  echo "==> Installing Wine host & cross-compiler dependencies (incl. gettext)..."
   sudo apt-get update && sudo apt-get install -y \
     build-essential bison flex pkg-config \
     gcc-mingw-w64-i686 g++-mingw-w64-i686 \
     gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64 \
+    gettext \
     libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev \
     libvulkan-dev libsdl2-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     libgstreamer-plugins-good1.0-dev libgstreamer-plugins-bad1.0-dev \
@@ -50,15 +59,13 @@ if [ "${CLEAN_BUILD}" = true ]; then
   rm -rf "${BUILD_DIR}" "${INSTALL_PREFIX}"
 fi
 
-mkdir -p "${BUILD_DIR}" "${INSTALL_PREFIX}"
+mkdir -p "${BUILD_DIR}" "${INSTALL_PREFIX}" "${DIST_DIR}"
 cd "${BUILD_DIR}"
 
 # 4. Run ./configure ONLY if Makefile does not exist
-# this force wine to show only english text in menu
-# --without-gettext \
-# --with-gettextpo=no
+# 注意：已移除 --without-gettext / --with-gettextpo=no，启用NLS多语言翻译编译
 if [ ! -f "Makefile" ]; then
-  echo "==> Running Wine ./configure..."
+  echo "==> Running Wine ./configure (gettext NLS enabled)..."
   ../configure --prefix="${INSTALL_PREFIX}" \
     --enable-archs=i386,x86_64 \
     --enable-win64 \
@@ -102,9 +109,7 @@ if [ ! -f "Makefile" ]; then
     --without-wayland \
     --without-ffmpeg \
     --without-opencl \
-    --without-vosk \
-    --without-gettext \
-    --with-gettextpo=no
+    --without-vosk
 fi
 
 # 5. Incremental Compilation Across All CPU Cores
@@ -140,16 +145,28 @@ else
   exit 1
 fi
 
-# 9. Inject Extra Package Assets
-echo "==> Injecting profile.json and prefixPack.tzst..."
+# 9. Customize prefixPack (中文环境: ACP=936, locale=0804, Noto字体, 字体替换)
+echo "==> Customizing prefixPack for Chinese locale..."
+CUSTOM_PREFIX="${BUILD_DIR}/prefixPack-custom.tzst"
+if [ -x "${WINE_SRC_DIR}/patch_prefix.sh" ]; then
+  bash "${WINE_SRC_DIR}/patch_prefix.sh" \
+    "${WINE_SRC_DIR}/prefixPack.tzst" \
+    "${CUSTOM_PREFIX}"
+  PREFIX_PACK="${CUSTOM_PREFIX}"
+else
+  echo "WARNING: patch_prefix.sh not found, using original prefixPack (English env)"
+  PREFIX_PACK="${WINE_SRC_DIR}/prefixPack.tzst"
+fi
 
-# Create profile.json dynamically with variable expansion
-cat > "${WINE_SRC_DIR}/profile.json" <<EOF
+# 10. Inject profile.json and prefixPack
+echo "==> Injecting profile.json and prefixPack..."
+
+cat > "${INSTALL_PREFIX}/profile.json" <<EOF
 {
     "type": "Wine",
-    "versionName": "${WINEVER}-x86_64",
+    "versionName": "${WINEVER}-x86_64-zh",
     "versionCode": 0,
-    "description": "Wine ${WINEVER} x86_64 - Windows compatibility layer with improved gaming support",
+    "description": "Wine ${WINEVER} x86_64 - Native multi-language (zh_CN/zh_TW + 49 locales) Chinese localized build",
     "files": [],
     "wine": {
         "binPath": "bin",
@@ -159,17 +176,24 @@ cat > "${WINE_SRC_DIR}/profile.json" <<EOF
 }
 EOF
 
+cp -v "${PREFIX_PACK}" "${INSTALL_PREFIX}/prefixPack.tzst"
 
-cp -v "${WINE_SRC_DIR}/profile.json" "${INSTALL_PREFIX}/"
-[ -f "${WINE_SRC_DIR}/prefixPack.tzst" ] && cp -v "${WINE_SRC_DIR}/prefixPack.tzst" "${INSTALL_PREFIX}/"
-
-# 10. Compress Package into .wcp
-echo "==> Packaging into Winlator Container Package (.wcp)..."
+# 11. Package into dual formats: .wcp.xz (ludashi) and .whp (pulse)
+echo "==> Packaging into dual formats..."
 cd "${INSTALL_PREFIX}"
-mkdir -p "$(dirname "${OUTPUT_WCP}")"
-tar --exclude='include' --use-compress-program="zstd -T0 --ultra -16" -cf "${OUTPUT_WCP}" .
+
+# 统一用xz压缩（ludashi先试XZ、pulse按magic识别XZ/ZSTD，两者都吃xz）
+TAR_XZ="${DIST_DIR}/${PKG_NAME}.tar.xz"
+tar --exclude='include' -cJf "${TAR_XZ}" .
+
+# ludashi_plus 格式
+cp -v "${TAR_XZ}" "${DIST_DIR}/${PKG_NAME}.wcp.xz"
+# winlator-pulse 格式（同内容，仅扩展名）
+cp -v "${TAR_XZ}" "${DIST_DIR}/${PKG_NAME}.whp"
+rm -f "${TAR_XZ}"
 
 echo "================================================================="
 echo "BUILD COMPLETE!"
-echo "Package saved to: ${OUTPUT_WCP}"
+echo "Packages in: ${DIST_DIR}/"
+ls -lh "${DIST_DIR}/"
 echo "================================================================="
