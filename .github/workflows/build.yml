@@ -1,0 +1,118 @@
+name: Build Wine 10.17 Chinese Localized
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'build.sh'
+      - 'patch_prefix.sh'
+      - 'po/zh_CN.po'
+      - '.github/workflows/build.yml'
+
+env:
+  WINEVER: "10.17"
+  PKG_NAME: "Wine-10.17-x86_64-zh"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies (incl. gettext NLS)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bison flex pkg-config \
+            gcc-mingw-w64-i686 g++-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64 \
+            gettext zstd xz-utils \
+            libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libvulkan-dev libsdl2-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-good1.0-dev libgstreamer-plugins-bad1.0-dev \
+            libasound2-dev libpulse-dev libgnutls28-dev libmpg123-dev \
+            libopenal-dev libpng-dev libjpeg-dev libtiff-dev libwebp-dev liblcms2-dev \
+            libxml2-dev libxslt1-dev libx11-dev libxcursor-dev libxi-dev \
+            libxrandr-dev libxrender-dev libkrb5-dev libgssapi-krb5-2 krb5-config
+          msgfmt --version | head -1
+
+      - name: Download Noto Sans CJK SC fonts
+        run: |
+          mkdir -p fonts
+          cd fonts
+          # Noto Sans CJK SC (Simplified Chinese), OFL open-source license
+          curl -sL -o noto-sc.zip "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/08_NotoSansCJKsc.zip"
+          if [ -f noto-sc.zip ] && unzip -l noto-sc.zip >/dev/null 2>&1; then
+            unzip -o noto-sc.zip "*.otf" 2>/dev/null || unzip -o noto-sc.zip
+            rm -f noto-sc.zip
+            ls -lh *.otf 2>/dev/null || ls -lh
+          else
+            echo "WARNING: Noto CJK download failed, trying Google Fonts mirror..."
+            curl -sL -o NotoSansSC.zip "https://fonts.google.com/download?family=Noto%20Sans%20SC" || true
+            ls -lh
+          fi
+          cd ..
+          echo "Fonts directory:"
+          ls -lh fonts/ || true
+
+      - name: Verify gettext NLS is enabled in build.sh
+        run: |
+          if grep -q 'without-gettext' build.sh && ! grep -q '#.*without-gettext' build.sh; then
+            echo "ERROR: --without-gettext still active in build.sh!"
+            exit 1
+          fi
+          echo "OK: gettext NLS enabled"
+          grep -n 'WINEVER' build.sh | head -2
+
+      - name: Build Wine (WOW64 x86_64 + i386, NLS multi-language)
+        run: |
+          chmod +x build.sh patch_prefix.sh
+          # 字体目录传给patch_prefix.sh
+          export FONT_DIR="$PWD/fonts"
+          # patch_prefix.sh被build.sh调用，字体目录通过环境变量或第三个参数
+          # 修改build.sh调用patch_prefix.sh时传入字体目录
+          sed -i "s|bash \"\${WINE_SRC_DIR}/patch_prefix.sh\" \\\\|bash \"\${WINE_SRC_DIR}/patch_prefix.sh\" \\\\|" build.sh
+          # 直接运行，build.sh内部会调用patch_prefix.sh
+          # 需要让patch_prefix.sh收到字体目录，修改build.sh中的调用
+          python3 - <<'PY'
+import re
+with open('build.sh') as f: c=f.read()
+c=c.replace(
+  'bash "${WINE_SRC_DIR}/patch_prefix.sh" \\\n    "${WINE_SRC_DIR}/prefixPack.tzst" \\\n    "${CUSTOM_PREFIX}"',
+  'bash "${WINE_SRC_DIR}/patch_prefix.sh" \\\n    "${WINE_SRC_DIR}/prefixPack.tzst" \\\n    "${CUSTOM_PREFIX}" \\\n    "${FONT_DIR:-}"'
+)
+with open('build.sh','w') as f: f.write(c)
+print("patched build.sh font dir arg")
+PY
+          bash build.sh --clean
+
+      - name: Verify output packages
+        run: |
+          echo "=== dist directory ==="
+          ls -lh dist/
+          echo ""
+          for f in dist/*.wcp.xz dist/*.whp; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="
+            echo "  size: $(du -h "$f" | cut -f1)"
+            echo "  magic: $(xxd -l 6 -p "$f")"
+            # 验证tar内容含profile.json和prefixPack
+            tar -tJf "$f" 2>/dev/null | grep -E 'profile.json|prefixPack' | head -3
+          done
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wine-10.17-x86_64-zh-packages
+          path: dist/
+          retention-days: 30
