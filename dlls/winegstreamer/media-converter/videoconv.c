@@ -1017,7 +1017,7 @@ static GstFlowReturn video_conv_sink_chain(GstPad *pad, GstObject *parent, GstBu
         return GST_FLOW_ERROR;
     else
     {
-        GstBufferMapInfo map;
+        GstMapInfo map;
         size_t fill_size = 0;
 
         if (gst_buffer_map(transcoded, &map, GST_MAP_READWRITE))
