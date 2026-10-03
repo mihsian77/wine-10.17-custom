@@ -56,6 +56,17 @@ cd "${BUILD_DIR}"
 # ==============================================================================
 # 阶段0: configure
 # ==============================================================================
+
+# ==============================================================================
+# GStreamer 兼容性补丁（Ubuntu 22.04 的 GStreamer 1.20 没有 GstBufferMapInfo）
+# GstBufferMapInfo 是 GStreamer 1.24+ 对 GstMapInfo 的别名，功能完全一致
+# ==============================================================================
+echo "==> 应用 GStreamer 1.20 兼容性补丁..."
+grep -rl "GstBufferMapInfo" "${WINE_SRC_DIR}/dlls/winegstreamer/" 2>/dev/null | while read f; do
+  sed -i 's/GstBufferMapInfo/GstMapInfo/g' "$f"
+  echo "  已修复: $(realpath --relative-to="${WINE_SRC_DIR}" "$f")"
+done
+
 if [ ! -f "Makefile" ]; then
   echo "==> [阶段0] Running Wine ./configure (NLS enabled)..."
   ../configure --prefix="${INSTALL_PREFIX}" \
