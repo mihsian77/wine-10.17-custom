@@ -1,0 +1,94 @@
+name: Build Wine 10.17 (Ubuntu 20.04 glibc2.31)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'build.sh'
+      - 'patch_prefix.sh'
+      - 'po/zh_CN.po'
+      - '.github/workflows/build-ubuntu2004.yml'
+
+env:
+  WINEVER: "10.17"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          apt-get clean
+          df -h /
+
+      - name: Install GCC 11 PPA
+        run: |
+          apt-get update
+          apt-get install -y software-properties-common
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          apt-get update
+
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential bison flex pkg-config \
+            gcc-11 g++-11 \
+            gcc-mingw-w64-i686 g++-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64 \
+            gettext zstd xz-utils \
+            libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libvulkan-dev libsdl2-dev \
+            libasound2-dev libpulse-dev libgnutls28-dev libmpg123-dev \
+            libopenal-dev libpng-dev libjpeg-dev libtiff-dev libwebp-dev liblcms2-dev \
+            libxml2-dev libxslt1-dev libx11-dev libxcursor-dev libxi-dev \
+            libxrandr-dev libxrender-dev libkrb5-dev libgssapi-krb5-2 krb5-config \
+            libunwind-dev \
+            python3 wget curl file
+          echo "CC=gcc-11" >> $GITHUB_ENV
+          echo "CXX=g++-11" >> $GITHUB_ENV
+
+      - name: Download Noto Sans CJK SC fonts
+        run: |
+          mkdir -p /tmp/fonts
+          cd /tmp/fonts
+          # Noto Sans CJK SC (子集，减小体积)
+          wget -q "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf" -O NotoSansCJKsc-Regular.otf || true
+          wget -q "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf" -O NotoSansCJKsc-Bold.otf || true
+          ls -lh /tmp/fonts/
+
+      - name: Verify gettext NLS enabled
+        run: |
+          msgfmt --version | head -1
+          echo "LINGUAS languages:"
+          head -5 po/LINGUAS 2>/dev/null || echo "no LINGUAS file"
+
+      - name: Build Wine (WOW64, NLS multi-language, Ubuntu20.04 glibc2.31)
+        run: |
+          export CC=gcc-11
+          export CXX=g++-11
+          export FONT_DIR=/tmp/fonts
+          bash build.sh
+
+      - name: Verify output packages
+        run: |
+          ls -lh dist/
+          echo "=== glibc兼容性验证 ==="
+          echo "编译环境glibc: $(ldd --version | head -1)"
+          for f in dist/*; do
+            echo "  $f"
+          done
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wine-10.17-x86_64-zh-ubuntu2004
+          path: dist/
+          retention-days: 30
