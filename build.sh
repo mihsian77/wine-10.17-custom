@@ -183,6 +183,19 @@ else
 fi
 
 # ==============================================================================
+# glibc兼容性检查（确认wine二进制依赖的glibc版本）
+# ==============================================================================
+echo "==> glibc兼容性检查..."
+echo "  编译环境glibc版本: $(ldd --version | head -1)"
+for bin in wine wine64 winecfg wineserver; do
+  if [ -f "${INSTALL_PREFIX}/bin/${bin}" ]; then
+    GLIBC_VER=$(objdump -T "${INSTALL_PREFIX}/bin/${bin}" 2>/dev/null | grep -oP 'GLIBC_[0-9.]+' | sort -V | tail -1)
+    echo "  ${bin}: 最高依赖 ${GLIBC_VER}"
+  fi
+done
+echo "  注意：Winlator rootfs glibc版本必须 >= 上述版本"
+
+# ==============================================================================
 # Package WCP format
 # ==============================================================================
 echo "==> Packaging WCP format..."
@@ -217,8 +230,10 @@ echo "  WCP: ${DIST_DIR}/${PKG_BASENAME}-amd64.wcp ($(du -h "${DIST_DIR}/${PKG_B
 
 # ==============================================================================
 # Package WHP format
+# 注意：不包含container-pattern，让winlator-pulse自己用winecfg生成
+# 这样可以测试wine二进制本身能否在目标环境运行
 # ==============================================================================
-echo "==> Packaging WHP format..."
+echo "==> Packaging WHP format (no container-pattern, let app generate)..."
 WHP_TMP="${BUILD_DIR}/whp-tmp"
 rm -rf "${WHP_TMP}"
 mkdir -p "${WHP_TMP}"
@@ -229,10 +244,8 @@ cp -r "${INSTALL_PREFIX}/bin" "${WINE_DIR}/"
 cp -r "${INSTALL_PREFIX}/lib" "${WINE_DIR}/"
 [ -d "${INSTALL_PREFIX}/share" ] && cp -r "${INSTALL_PREFIX}/share" "${WINE_DIR}/"
 
-zstd -T0 -9 -c "${PREFIX_TAR}" > "${WHP_TMP}/container-pattern-${WINEVER}.tzst"
-
 cd "${WHP_TMP}"
-tar -I "xz -T0 -9e" -cf "${DIST_DIR}/${PKG_BASENAME}.whp" "${PKG_BASENAME}-" "container-pattern-${WINEVER}.tzst"
+tar -I "xz -T0 -9e" -cf "${DIST_DIR}/${PKG_BASENAME}.whp" "${PKG_BASENAME}-"
 echo "  WHP: ${DIST_DIR}/${PKG_BASENAME}.whp ($(du -h "${DIST_DIR}/${PKG_BASENAME}.whp" | cut -f1))"
 
 echo "================================================================="
