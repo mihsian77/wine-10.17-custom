@@ -85,7 +85,7 @@ if [ ! -f "Makefile" ]; then
     --without-cups --without-gphoto --without-sane --without-oss \
     --without-pcap --without-pcsclite --without-udev --without-usb \
     --without-v4l2 --without-wayland --without-ffmpeg --without-opencl \
-    --without-vosk
+    --without-vosk --without-gstreamer
 fi
 
 NPROC=$(nproc)
