@@ -4,7 +4,9 @@
 
 ## 相对上游的改动
 
-- xxx（补丁内容 / 构建参数调整，请按实际情况补充）
+- 新增 Ubuntu 20.04（glibc 2.31）编译环境，降低运行时 glibc 依赖以兼容 Winlator
+- GStreamer 兼容性补丁（GstBufferMapInfo → GstMapInfo），支持 --without-gstreamer 构建
+- whp 打包移除 container-pattern，由 app 端自生成
 
 ## INTRODUCTION
 
