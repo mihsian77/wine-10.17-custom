@@ -138,9 +138,14 @@ rm -rf "${INSTALL_PREFIX}/share/man" "${INSTALL_PREFIX}/share/doc"
 # 删除include（运行时不需要）
 rm -rf "${INSTALL_PREFIX}/include"
 
-# 激进 strip：--strip-all 比 --strip-unneeded 更彻底
-echo "  Stripping ELF .so..."
-find "${INSTALL_PREFIX}" -name "*.so*" -exec strip --strip-all {} + 2>/dev/null || true
+# Strip所有ELF二进制（bin/和unix .so），box64无法加载带DWARF debug_info的二进制
+echo "  Stripping ELF binaries (bin + unix .so)..."
+find "${INSTALL_PREFIX}/bin" -type f | while read f; do
+  if file "$f" | grep -q "ELF"; then strip --strip-all "$f" 2>/dev/null || true; fi
+done
+find "${INSTALL_PREFIX}/lib/wine/x86_64-unix" -type f | while read f; do
+  if file "$f" | grep -q "ELF"; then strip --strip-all "$f" 2>/dev/null || true; fi
+done
 echo "  Stripping PE x86_64..."
 find "${INSTALL_PREFIX}" -path "*x86_64-windows*" \( -name "*.dll" -o -name "*.exe" \) -exec x86_64-w64-mingw32-strip --strip-all {} + 2>/dev/null || true
 echo "  Stripping PE i386..."
@@ -225,7 +230,7 @@ cat > "${WCP_TMP}/profile.json" <<EOF
 EOF
 
 cd "${WCP_TMP}"
-tar -I "zstd -T0 --ultra -22" -cf "${DIST_DIR}/${PKG_BASENAME}-amd64.wcp" .
+tar --owner=0 --group=0 -I "zstd -T0 --ultra -22" -cf "${DIST_DIR}/${PKG_BASENAME}-amd64.wcp" .
 echo "  WCP: ${DIST_DIR}/${PKG_BASENAME}-amd64.wcp ($(du -h "${DIST_DIR}/${PKG_BASENAME}-amd64.wcp" | cut -f1))"
 
 # ==============================================================================
@@ -244,8 +249,11 @@ cp -r "${INSTALL_PREFIX}/bin" "${WINE_DIR}/"
 cp -r "${INSTALL_PREFIX}/lib" "${WINE_DIR}/"
 [ -d "${INSTALL_PREFIX}/share" ] && cp -r "${INSTALL_PREFIX}/share" "${WINE_DIR}/"
 
+# 0字节container-pattern占位文件（winlator-pulse安装时会自行生成真实prefix）
+touch "${WHP_TMP}/container-pattern-${WINEVER}.tzst"
+
 cd "${WHP_TMP}"
-tar -I "xz -T0 -9e" -cf "${DIST_DIR}/${PKG_BASENAME}.whp" "${PKG_BASENAME}-"
+tar --owner=0 --group=0 -I "xz -T0 -9e" -cf "${DIST_DIR}/${PKG_BASENAME}.whp" "${PKG_BASENAME}-" "container-pattern-${WINEVER}.tzst"
 echo "  WHP: ${DIST_DIR}/${PKG_BASENAME}.whp ($(du -h "${DIST_DIR}/${PKG_BASENAME}.whp" | cut -f1))"
 
 echo "================================================================="
